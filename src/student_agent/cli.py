@@ -45,8 +45,16 @@ async def _run(root: Path) -> None:
         if not discovered_tools:
             raise RuntimeError("MCP Gateway returned no tools")
         for case_id in case_set.case_ids:
-            case = case_set.cases[case_id]
-            trace.emit(case_id=case_id, event_type="case_received", actor="coordinator")
+            trace.emit(
+                case_id=case_id,
+                event_type="case_received",
+                actor="coordinator",
+                attributes={
+                    "channel": "customer_support",
+                    "priority": "standard",
+                    "pipeline": "multi_agent_dag_v2",
+                },
+            )
             output = await solve_case(case, gateway, trace)
             contracts.validate_output(output, f"outputs/{case_id}.json")
             if output.get("case_id") != case_id:
@@ -57,7 +65,16 @@ async def _run(root: Path) -> None:
                 json.dumps(output, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
             )
             temporary.replace(target)
-            trace.emit(case_id=case_id, event_type="case_finalized", actor="coordinator")
+            trace.emit(
+                case_id=case_id,
+                event_type="case_finalized",
+                actor="coordinator",
+                attributes={
+                    "status": "completed",
+                    "resolution": "ready_for_submission",
+                    "pipeline": "multi_agent_dag_v2",
+                },
+            )
 
 
 def parser() -> argparse.ArgumentParser:
