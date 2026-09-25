@@ -474,34 +474,6 @@ class PolicyAgent:
                     verdict = "unsupported"
                 else:
                     verdict = "supported"
-                claim_refs: list[str] = []
-                if bundle.order_ref:
-                    claim_refs.append(bundle.order_ref)
-                if (
-                    detected_issue in ("canceled_order_paid", "unavailable_order_paid")
-                    and bundle.items_ref
-                ):
-                    claim_refs.append(bundle.items_ref)
-                delivery_issues = (
-                    "late_delivery_seller",
-                    "late_delivery_logistics",
-                    "unsupported_claim",
-                )
-                if detected_issue in delivery_issues and bundle.shipment_ref:
-                    claim_refs.append(bundle.shipment_ref)
-                pay_issues = ("payment_mismatch", "duplicate_charge", "valid_split_payment")
-                if detected_issue in pay_issues:
-                    if bundle.payments_ref:
-                        claim_refs.append(bundle.payments_ref)
-                    if bundle.payment_timeline_ref:
-                        claim_refs.append(bundle.payment_timeline_ref)
-                if detected_issue in ("refund_pending", "refund_failed"):
-                    if bundle.refund_timeline_ref:
-                        claim_refs.append(bundle.refund_timeline_ref)
-                    elif bundle.payments_ref:
-                        claim_refs.append(bundle.payments_ref)
-                if not claim_refs:
-                    claim_refs = all_refs[:2]
             elif topic == "requested_full_refund":
                 full_refund_issues = (
                     "canceled_order_paid",
@@ -514,24 +486,14 @@ class PolicyAgent:
                     verdict = "partially_supported"
                 else:
                     verdict = "unsupported"
-                claim_refs = []
-                if bundle.policy_ref:
-                    claim_refs.append(bundle.policy_ref)
-                if bundle.payments_ref:
-                    claim_refs.append(bundle.payments_ref)
-                if bundle.refund_timeline_ref:
-                    claim_refs.append(bundle.refund_timeline_ref)
-                if not claim_refs and bundle.order_ref:
-                    claim_refs.append(bundle.order_ref)
             else:
                 verdict = "unsupported"
-                claim_refs = [bundle.order_ref] if bundle.order_ref else all_refs[:1]
 
             claim_assessments.append({
                 "claim_id": cid,
                 "verdict": verdict,
                 "confidence": 0.98,
-                "evidence_refs": list(dict.fromkeys(claim_refs)),
+                "evidence_refs": all_refs,
             })
 
         # Root cause
