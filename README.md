@@ -21,6 +21,11 @@ Tham khảo dữ liệu tại: https://www.kaggle.com/datasets/olistbr/brazilian
 
 Làm nhóm hoặc cá nhân, khi fork về các bạn giữ nguyên tên gốc repo, không đổi tên
 
+### Danh sách thành viên nhóm:
+1. **Nguyễn Vũ Anh - 2A202602502** (Trưởng nhóm) — Orchestrator, Coordinator / Router & Multi-Agent Architecture
+2. **Trương Việt Anh - 2A202602444** — Kết nối MCP Evidence Gateway & Thiết kế Specialist Subagents (Order, Payment, Shipment)
+3. **Vũ Việt Hoàng - 2A202602398** — Policy Engine, Verifier Agent, kiểm chứng log, schema & contract validation
+
 ## 1. Cài đặt
 
 Yêu cầu Python 3.11 trở lên.
