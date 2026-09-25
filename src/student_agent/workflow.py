@@ -597,37 +597,30 @@ class VerifierAgent:
         # Validate schema invariants
         self.trace.contracts.validate_output(output, f"verifier:{case_id}")
 
-        # Invariant checks:
-        # 1. Money consistency: recommended_refund_brl must equal sum of refund_lines
-        refund_lines = output["financial_resolution"]["refund_lines"]
-        refund_total = sum(line["amount_brl"] for line in refund_lines)
-        recommended = output["financial_resolution"]["recommended_refund_brl"]
-        if abs(refund_total - recommended) > 1e-4:
-            raise ValueError(f"Verifier rejected {case_id}: refund mismatch")
-
-        # 2. Case status consistency
-        if (
-            output["assessment"]["case_status"] == "no_action"
-            and output["financial_resolution"]["recommended_refund_brl"] != 0.0
-        ):
-            raise ValueError(f"Verifier rejected {case_id}: non-zero refund for no_action")
-
-        # 3. Evidence non-empty check
+        # A violation is reported in the trace instead of raised: raising would abort the
+        # whole 100-case run and forfeit every other case.
+        violations: list[str] = []
+        financial = output["financial_resolution"]
+        refund_total = sum(line["amount_brl"] for line in financial["refund_lines"])
+        if abs(refund_total - financial["recommended_refund_brl"]) > 1e-4:
+            violations.append("refund_lines_total_mismatch")
+        if output["assessment"]["case_status"] == "no_action" and refund_total != 0.0:
+            violations.append("refund_on_no_action")
         if not output["evidence_refs"]:
-            raise ValueError(f"Verifier rejected {case_id}: missing required evidence refs")
+            violations.append("missing_evidence_refs")
+        seller_ids = set(output["affected_entities"]["seller_ids"])
+        for party in output["root_cause_analysis"]["responsible_parties"]:
+            if party["party_type"] == "seller" and party["party_id"] not in seller_ids:
+                violations.append("responsible_seller_not_affected")
 
-        # Verification completed
         self.trace.emit(
             case_id=case_id,
             event_type="verification_completed",
             actor="verifier",
-            decision_code="PASS",
+            decision_code="FAIL" if violations else "PASS",
             attributes={
-                "status": "verified",
-                "invariant_checks": "all_passed",
-                "currency_check": "passed",
-                "refund_limit_check": "passed",
-                "schema_compliance": "passed",
+                "status": "rejected" if violations else "verified",
+                "invariant_checks": ",".join(violations) or "all_passed",
             },
         )
 
