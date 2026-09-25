@@ -23,6 +23,8 @@ Order Agent  Payment Agent  Shipment Agent
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from datetime import datetime
+from decimal import Decimal, InvalidOperation
 from typing import Any
 
 from .mcp_gateway import EvidenceGateway
@@ -41,6 +43,51 @@ CAUSE_CODE_MAP: dict[str, str] = {
     "unsupported_claim": "UNSUBSTANTIATED_CUSTOMER_CLAIM",
     "insufficient_evidence": "INSUFFICIENT_EVIDENCE_GATHERED",
 }
+
+ORDER_TOPICS = {"canceled_order_paid", "unavailable_order_paid"}
+PAYMENT_TOPICS = {"valid_split_payment", "payment_mismatch", "duplicate_charge"}
+REFUND_TOPICS = {"refund_pending", "refund_failed"}
+DELIVERY_TOPICS = {"late_delivery_seller", "late_delivery_logistics"}
+
+
+def _rows(value: Any) -> list[dict[str, Any]]:
+    if isinstance(value, list):
+        return [row for row in value if isinstance(row, dict)]
+    return []
+
+
+def _money(value: Any) -> Decimal:
+    try:
+        return Decimal(str(value))
+    except (InvalidOperation, TypeError, ValueError):
+        return Decimal()
+
+
+def _datetime(value: Any) -> datetime | None:
+    if not isinstance(value, str):
+        return None
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+
+
+def _unique(values: list[Any]) -> list[str]:
+    return list(
+        dict.fromkeys(str(value) for value in values if value not in (None, ""))
+    )
+
+
+def _visible_events(value: Any, opened_at: datetime | None) -> list[dict[str, Any]]:
+    events = _rows(value.get("events")) if isinstance(value, dict) else []
+    if opened_at is None:
+        return events
+    visible: list[dict[str, Any]] = []
+    for event in events:
+        event_at = _datetime(event.get("event_at"))
+        if event_at is None or event_at <= opened_at:
+            visible.append(event)
+    return visible
 
 
 @dataclass
@@ -154,18 +201,33 @@ class OrderAgent:
             evidence_refs=[bundle.order_ref],
         )
 
-        if primary_topic in ("canceled_order_paid", "unavailable_order_paid"):
-            items_ev = await self.gateway.call(
-                "get_order_items", case_id=case_id, order_id=order_id
+        # Item rows are the authoritative source for item and seller IDs and are
+        # also needed to reconcile split/duplicate payment totals.
+        items_ev = await self.gateway.call(
+            "get_order_items", case_id=case_id, order_id=order_id
+        )
+        bundle.items_data = _rows(items_ev.get("data"))
+        bundle.items_ref = items_ev["evidence_ref"]
+        self.trace.emit(
+            case_id=case_id,
+            event_type="tool_result_consumed",
+            actor="order_agent",
+            tool_name="get_order_items",
+            evidence_refs=[bundle.items_ref],
+        )
+
+        if primary_topic == "late_delivery_seller":
+            sellers_ev = await self.gateway.call(
+                "get_sellers", case_id=case_id, order_id=order_id
             )
-            bundle.items_data = items_ev.get("data", [])
-            bundle.items_ref = items_ev["evidence_ref"]
+            bundle.sellers_data = _rows(sellers_ev.get("data"))
+            bundle.sellers_ref = sellers_ev["evidence_ref"]
             self.trace.emit(
                 case_id=case_id,
                 event_type="tool_result_consumed",
                 actor="order_agent",
-                tool_name="get_order_items",
-                evidence_refs=[bundle.items_ref],
+                tool_name="get_sellers",
+                evidence_refs=[bundle.sellers_ref],
             )
 
 
@@ -179,15 +241,7 @@ class PaymentAgent:
     async def investigate(
         self, case_id: str, order_id: str, primary_topic: str, bundle: EvidenceBundle
     ) -> None:
-        needs_payments = primary_topic in (
-            "canceled_order_paid",
-            "unavailable_order_paid",
-            "duplicate_charge",
-            "payment_mismatch",
-            "refund_pending",
-            "refund_failed",
-            "valid_split_payment",
-        )
+        needs_payments = primary_topic in ORDER_TOPICS | PAYMENT_TOPICS | REFUND_TOPICS
         if not needs_payments:
             return
 
@@ -202,7 +256,9 @@ class PaymentAgent:
             evidence_refs=[bundle.payments_ref],
         )
 
-        if primary_topic in ("duplicate_charge", "payment_mismatch"):
+        # A captured timeline proves paid-state and is the authoritative source
+        # for duplicate/reconciliation decisions.
+        if primary_topic in ORDER_TOPICS | PAYMENT_TOPICS:
             pt_ev = await self.gateway.call(
                 "get_payment_timeline", case_id=case_id, order_id=order_id
             )
@@ -216,22 +272,19 @@ class PaymentAgent:
                 evidence_refs=[bundle.payment_timeline_ref],
             )
 
-        if primary_topic in ("refund_pending", "refund_failed"):
-            try:
-                rf_ev = await self.gateway.call(
-                    "get_refund_timeline", case_id=case_id, order_id=order_id
-                )
-                bundle.refund_timeline_data = rf_ev.get("data")
-                bundle.refund_timeline_ref = rf_ev["evidence_ref"]
-                self.trace.emit(
-                    case_id=case_id,
-                    event_type="tool_result_consumed",
-                    actor="payment_agent",
-                    tool_name="get_refund_timeline",
-                    evidence_refs=[bundle.refund_timeline_ref],
-                )
-            except Exception:
-                pass
+        if primary_topic in REFUND_TOPICS:
+            rf_ev = await self.gateway.call(
+                "get_refund_timeline", case_id=case_id, order_id=order_id
+            )
+            bundle.refund_timeline_data = rf_ev.get("data")
+            bundle.refund_timeline_ref = rf_ev["evidence_ref"]
+            self.trace.emit(
+                case_id=case_id,
+                event_type="tool_result_consumed",
+                actor="payment_agent",
+                tool_name="get_refund_timeline",
+                evidence_refs=[bundle.refund_timeline_ref],
+            )
 
 
 class ShipmentAgent:
@@ -244,11 +297,7 @@ class ShipmentAgent:
     async def investigate(
         self, case_id: str, order_id: str, primary_topic: str, bundle: EvidenceBundle
     ) -> None:
-        needs_shipment = primary_topic in (
-            "late_delivery_seller",
-            "late_delivery_logistics",
-            "unsupported_claim",
-        )
+        needs_shipment = primary_topic in DELIVERY_TOPICS | {"unsupported_claim"}
         if not needs_shipment:
             return
 

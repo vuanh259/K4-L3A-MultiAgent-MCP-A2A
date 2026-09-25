@@ -74,18 +74,18 @@ class EvidenceGateway:
     async def call(self, tool_name: str, *, case_id: str, **arguments: str) -> dict[str, Any]:
         payload = {"case_id": case_id, **arguments}
         result = None
-        for attempt in range(4):
+        for attempt in range(6):
             try:
                 session = await self._ensure_session()
                 result = await session.call_tool(tool_name, arguments=payload)
                 break
             except (Exception, asyncio.CancelledError, BaseExceptionGroup) as exc:
                 await self._reset_session()
-                if attempt == 3:
+                if attempt == 5:
                     raise RuntimeError(
                         f"MCP tool {tool_name} failed after retries: {exc}"
                     ) from exc
-                await asyncio.sleep(1.0 * (attempt + 1))
+                await asyncio.sleep(2.0 * (attempt + 1))
 
         if result is None:
             raise RuntimeError(f"MCP tool {tool_name} returned no result")
